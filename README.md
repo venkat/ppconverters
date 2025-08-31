@@ -50,3 +50,5 @@ The scripts generate a standardized 5-column CSV file with the following headers
 *   `Amount`
 
 This format ensures that transactions like buys, sells, dividends, and fees are correctly recognized by Portfolio Performance.
+
+The output CSV can contain several other columns carried over from the input. Map the right columns during the CSV import phase of Portfolio Performance or try out one of the import configurations in the `import_config` folder.
