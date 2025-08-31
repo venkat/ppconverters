@@ -7,7 +7,10 @@ This project provides a collection of Python scripts to convert CSV files from v
 These scripts are designed to work with transaction history CSVs downloaded from the following institutions and account types:
 
 *   **Morgan Stanley**
-    *   Global Stock Unit (GSU) Plan Accounts
+    * Stock Unit (RSU) Plan Accounts. 
+   
+    Source: Activity Report (2 CSV files in the report - Releases report, Withdrawals report)
+
 *   **Vanguard**
     *   401(k) & IRA Accounts
     *   Brokerage Accounts
