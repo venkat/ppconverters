@@ -9,13 +9,17 @@ These scripts are designed to work with transaction history CSVs downloaded from
 *   **Morgan Stanley**
     * Stock Unit (RSU) Plan Accounts. 
    
-    Source: Activity Report (2 CSV files in the report - Releases report, Withdrawals report)
+    Source: Activity Report from http://atwork.morganstanley.com/ (2 CSV files in the report - Releases report, Withdrawals report downloaded from Activity > Reports > Activity Report with Output Format CSV)
 
 *   **Vanguard**
     *   401(k) & IRA Accounts
     *   Brokerage Accounts
+
+    Source: CSV file downloaded from Vanguard's Download Center.
 *   **Fidelity**
     *   401(k) & IRA Accounts
+
+    Source: CSV downloaded from "Activity & Orders" tab on the Fidelity website.
 
 ## Usage
 
