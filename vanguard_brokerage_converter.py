@@ -35,7 +35,7 @@ def process_vanguard_csv(input_file, rules):
         if 'Account Number,Trade Date,Settlement Date' in line:
             start_index = i
             break
-    
+
     # If the transaction header is not found, the file may be in an unexpected format.
     if start_index == -1:
         print("Brokerage transaction data not found", file=sys.stderr)
@@ -44,12 +44,14 @@ def process_vanguard_csv(input_file, rules):
     # Extract the header line and parse it to get a list of column names.
     header_line = lines[start_index].strip()
     header = next(csv.reader([header_line]))
-    
+
     # To make the script robust against changes in column order, we find the index
     # of the columns we need to modify.
     transaction_type_index = header.index('Transaction Type') if 'Transaction Type' in header else -1
     principal_amount_index = header.index('Principal Amount') if 'Principal Amount' in header else -1
     shares_index = header.index('Shares') if 'Shares' in header else -1
+    share_price_index = header.index('Share Price') if 'Share Price' in header else -1
+    symbol_index = header.index('Symbol') if 'Symbol' in header else -1
 
     # Print the header for the output. The output will be a valid CSV.
     print(header_line)
@@ -68,10 +70,20 @@ def process_vanguard_csv(input_file, rules):
         except StopIteration:
             # Skip any lines that are empty or fail to parse.
             continue
-        
+
         # Check if the 'Transaction Type' column exists and the row is long enough.
         if transaction_type_index != -1 and len(row) > transaction_type_index:
             original_transaction_type = row[transaction_type_index].strip().lower()
+
+            # Get symbol and share price for context
+            symbol = row[symbol_index].strip().upper() if symbol_index != -1 and len(row) > symbol_index else ''
+            share_price_str = row[share_price_index].strip() if share_price_index != -1 and len(row) > share_price_index else ''
+
+            # Check if this is a money market fund (VMFXX or price = $1.00)
+            # Money market funds have a stable $1.00 NAV, so shares = dollars
+            is_money_market = (symbol == 'VMFXX' or
+                              share_price_str in ['1', '1.0', '1.00'] or
+                              (share_price_str in ['0.0', '0', ''] and symbol == 'VMFXX'))
 
             # Specific rule for 'sweep' transactions into/out of the settlement fund.
             # These are essentially buys/sells of the money market fund.
@@ -86,19 +98,30 @@ def process_vanguard_csv(input_file, rules):
                     # Set the shares to be the same as the principal amount.
                     if shares_index != -1 and len(row) > shares_index:
                         row[shares_index] = positive_principal
-            
+
             # Specific rule for 'reinvestment' transactions.
+            # FIX: For money market funds like VMFXX, we need to set shares = principal amount
+            # since the share price is always $1.00
             elif original_transaction_type.startswith('reinvestment'):
                 # The input file often lists the principal for reinvestments as negative.
                 # We convert it to a positive value for the output format.
                 if principal_amount_index != -1 and len(row) > principal_amount_index:
                     principal_amount = row[principal_amount_index]
-                    if principal_amount.startswith('-'):
-                        row[principal_amount_index] = principal_amount[1:]
+                    positive_principal = principal_amount[1:] if principal_amount.startswith('-') else principal_amount
+                    row[principal_amount_index] = positive_principal
+
+                    # FIX: For money market funds (VMFXX), shares = principal amount since price = $1.00
+                    # Without this fix, VMFXX reinvestments have 0 shares and don't add to the balance
+                    if is_money_market and shares_index != -1 and len(row) > shares_index:
+                        row[shares_index] = positive_principal
+                        # Also set share price to 1.0 if not already set properly
+                        if share_price_index != -1 and len(row) > share_price_index:
+                            if not share_price_str or share_price_str in ['0.0', '0', '']:
+                                row[share_price_index] = '1.0'
 
             # Apply the general conversion rules to standardize the transaction type.
             row[transaction_type_index] = apply_conversion_rules(row[transaction_type_index], rules)
-        
+
         # Print the processed row as a comma-separated string to standard output.
         print(','.join(row))
 
@@ -108,7 +131,7 @@ if __name__ == '__main__':
     if len(sys.argv) < 2:
         print(f"Usage: python {sys.argv[0]} <input_file>", file=sys.stderr)
         sys.exit(1)
-    
+
     # Define the mapping from Vanguard's transaction types to standardized types.
     # These rules are designed to create a generic, import-friendly CSV format.
     conversion_rules = {
@@ -127,7 +150,7 @@ if __name__ == '__main__':
         'transfer (outgoing)': 'Removal',
         'withdrawal': 'Removal'
     }
-    
+
     # Get the input filename from the command-line arguments.
     input_filename = sys.argv[1]
     # Call the main processing function with the filename and conversion rules.
