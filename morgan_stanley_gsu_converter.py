@@ -67,6 +67,7 @@ def process_withdrawals_report(header, reader, writer):
     # --- Find indices of columns for the Withdrawals report ---
     type_index = header.index('Type')
     order_number_index = header.index('Order Number')
+    plan_index = header.index('Plan')
     quantity_index = header.index('Quantity')
     net_amount_index = header.index('Net Amount')
 
@@ -81,10 +82,14 @@ def process_withdrawals_report(header, reader, writer):
         if row and row[0].startswith('Please note that'):
             continue
 
-        # Rule: Change 'Type' from "Sale" to "Sell".
-        if row[type_index] == 'Sale':
+        # Rule: Handle dividends (Plan = 'Cash') differently from stock sales.
+        if row[plan_index] == 'Cash':
+            # This is a dividend payment, not a stock sale.
+            row[type_index] = 'Dividend'
+        elif row[type_index] == 'Sale':
+            # Rule: Change 'Type' from "Sale" to "Sell" for stock sales.
             row[type_index] = 'Sell'
-        
+
         # Rule: Remove the "-" sign from the 'Quantity' value.
         row[quantity_index] = row[quantity_index].replace('-', '')
 
@@ -93,7 +98,7 @@ def process_withdrawals_report(header, reader, writer):
 
         # Rule: Add the stock symbol ('GOOG').
         row.insert(order_number_index + 1, 'GOOG')
-        
+
         writer.writerow(row)
 
 def process_morgan_stanley_report(input_file_path):
