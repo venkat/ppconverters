@@ -101,7 +101,7 @@ def convert_vanguard_401k_csv(input_file_path):
                 elif type_col == 'Dividend Received':
                     type_col = 'Dividend'
                 elif type_col == 'Rollover Conversion':
-                    type_col = 'Buy'
+                    type_col = 'Deposit'
 
             # Insert the new 'Type' value into the row
             row.insert(desc_index + 1, type_col)
