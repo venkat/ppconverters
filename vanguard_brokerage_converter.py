@@ -2,6 +2,16 @@
 import csv
 import sys
 
+# Transaction types that the Portfolio Performance import configuration
+# (import_config/Vanguard_Brokerage_CSV_download.json) knows how to map.
+# Any other type (for example Vanguard's 'Stock split' rows) is still written
+# to the output unchanged, but PP cannot import it, so it has to be handled
+# manually in PP. A warning is printed on stderr for every such row.
+PP_IMPORT_TYPES = {
+    'Buy', 'Sell', 'Dividend', 'Deposit', 'Removal', 'Interest', 'Interest Charge',
+    'Fees', 'Fees Refund', 'Taxes', 'Tax Refund', 'Transfer (Inbound)', 'Transfer (Outbound)',
+}
+
 # This function standardizes the transaction type string based on a set of rules.
 # It checks if a transaction type starts with a known prefix and replaces it with a standard term.
 # This helps in normalizing varied but similar transaction descriptions from the input file.
@@ -52,9 +62,14 @@ def process_vanguard_csv(input_file, rules):
     shares_index = header.index('Shares') if 'Shares' in header else -1
     share_price_index = header.index('Share Price') if 'Share Price' in header else -1
     symbol_index = header.index('Symbol') if 'Symbol' in header else -1
+    trade_date_index = header.index('Trade Date') if 'Trade Date' in header else -1
+    description_index = header.index('Transaction Description') if 'Transaction Description' in header else -1
 
     # Print the header for the output. The output will be a valid CSV.
     print(header_line)
+
+    # Number of rows whose transaction type PP cannot import (reported on stderr).
+    unmapped_rows = 0
 
     # Process each line of transaction data, starting from the line after the header.
     for i in range(start_index + 1, len(lines)):
@@ -122,8 +137,27 @@ def process_vanguard_csv(input_file, rules):
             # Apply the general conversion rules to standardize the transaction type.
             row[transaction_type_index] = apply_conversion_rules(row[transaction_type_index], rules)
 
+            # Warn on stderr about any type Portfolio Performance cannot import
+            # (for example 'Stock split'). The row is still written to stdout so
+            # nothing is silently dropped, but it must be handled manually in PP.
+            converted_type = row[transaction_type_index].strip()
+            if converted_type not in PP_IMPORT_TYPES:
+                unmapped_rows += 1
+                trade_date = row[trade_date_index] if trade_date_index != -1 and len(row) > trade_date_index else ''
+                description = row[description_index] if description_index != -1 and len(row) > description_index else ''
+                shares = row[shares_index] if shares_index != -1 and len(row) > shares_index else ''
+                amount = row[principal_amount_index] if principal_amount_index != -1 and len(row) > principal_amount_index else ''
+                print(f"WARNING: line {i + 1}: transaction type '{converted_type}' has no Portfolio Performance "
+                      f"mapping and must be handled manually in PP -> {trade_date} {symbol} "
+                      f"'{description}' shares={shares} amount={amount}", file=sys.stderr)
+
         # Print the processed row as a comma-separated string to standard output.
         print(','.join(row))
+
+    # Final reminder so the warnings above are not missed when stderr scrolls by.
+    if unmapped_rows:
+        print(f"WARNING: {unmapped_rows} row(s) have a transaction type Portfolio Performance cannot import "
+              f"(see above). Handle them manually in PP (e.g. Securities > Stock split).", file=sys.stderr)
 
 # This block executes when the script is run directly from the command line.
 if __name__ == '__main__':

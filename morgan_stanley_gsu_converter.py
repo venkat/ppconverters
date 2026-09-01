@@ -10,6 +10,21 @@ import csv
 import sys
 import os
 
+# Transaction types the Portfolio Performance import configurations in import_config/
+# can map. Anything else in the 'Type' column makes PP fail with "Unable to parse value",
+# so every such row gets a warning on stderr.
+PP_IMPORT_TYPES = {
+    'Buy', 'Sell', 'Dividend', 'Deposit', 'Removal', 'Interest', 'Interest Charge',
+    'Fees', 'Fees Refund', 'Taxes', 'Tax Refund', 'Transfer (Inbound)', 'Transfer (Outbound)',
+}
+
+
+def warn_if_unmapped(type_value, row):
+    """Print a stderr warning when PP will not be able to import this row's type."""
+    if type_value not in PP_IMPORT_TYPES:
+        print(f"WARNING: transaction type '{type_value}' has no Portfolio Performance mapping and must be "
+              f"handled manually in PP -> {row}", file=sys.stderr)
+
 def process_releases_report(header, reader, writer):
     """
     Processes a GSU Releases report by applying its specific transformation rules.
@@ -42,6 +57,7 @@ def process_releases_report(header, reader, writer):
         # Rule: Change 'Type' from 'Release' to 'Buy'.
         if row[type_index] == 'Release':
             row[type_index] = 'Buy'
+        warn_if_unmapped(row[type_index], row)
 
         # Rule: Calculate the 'Value' of the released shares.
         try:
@@ -82,13 +98,18 @@ def process_withdrawals_report(header, reader, writer):
         if row and row[0].startswith('Please note that'):
             continue
 
-        # Rule: Handle dividends (Plan = 'Cash') differently from stock sales.
-        if row[plan_index] == 'Cash':
-            # This is a dividend payment, not a stock sale.
-            row[type_index] = 'Dividend'
+        # Rule: Plan = 'Cash' rows are NOT dividends. Morgan Stanley books a withdrawal of
+        # the cash balance (accumulated dividends) as a "sale" of Cash at $1.00; the same
+        # order number shows up in the Withdrawal Wire Report as a wire out. In PP that is
+        # a Removal from the deposit account: no shares and no security attached.
+        is_cash_withdrawal = row[plan_index] == 'Cash'
+        if is_cash_withdrawal:
+            row[type_index] = 'Removal'
+            row[quantity_index] = ''
         elif row[type_index] == 'Sale':
             # Rule: Change 'Type' from "Sale" to "Sell" for stock sales.
             row[type_index] = 'Sell'
+        warn_if_unmapped(row[type_index], row)
 
         # Rule: Remove the "-" sign from the 'Quantity' value.
         row[quantity_index] = row[quantity_index].replace('-', '')
@@ -96,8 +117,9 @@ def process_withdrawals_report(header, reader, writer):
         # Rule: Format 'Net Amount' to remove "$" and "," separators.
         row[net_amount_index] = row[net_amount_index].replace('$', '').replace(',', '')
 
-        # Rule: Add the stock symbol ('GOOG').
-        row.insert(order_number_index + 1, 'GOOG')
+        # Rule: Add the stock symbol ('GOOG'); a cash withdrawal gets no symbol so PP does
+        # not attach a security to the Removal.
+        row.insert(order_number_index + 1, '' if is_cash_withdrawal else 'GOOG')
 
         writer.writerow(row)
 

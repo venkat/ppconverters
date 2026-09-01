@@ -4,6 +4,22 @@ import io
 import sys
 import os
 
+# Transaction types that the Portfolio Performance import configurations in
+# import_config/ know how to map. Any other value in the 'Type' column makes PP
+# fail with "Unable to parse value ...", so a warning is printed on stderr for it.
+PP_IMPORT_TYPES = {
+    'Buy', 'Sell', 'Dividend', 'Deposit', 'Removal', 'Interest', 'Interest Charge',
+    'Fees', 'Fees Refund', 'Taxes', 'Tax Refund', 'Transfer (Inbound)', 'Transfer (Outbound)',
+}
+
+
+def to_float(value):
+    """Parse a numeric CSV cell; blanks or junk count as 0."""
+    try:
+        return float(str(value).replace('$', '').replace(',', '').strip() or 0)
+    except ValueError:
+        return 0.0
+
 def convert_vanguard_401k_csv(input_file_path):
     """
     Parses a Vanguard 401K or Roth IRA CSV file, transforms it, and returns the result as a string.
@@ -40,10 +56,22 @@ def convert_vanguard_401k_csv(input_file_path):
         else:
             raise ValueError("Unsupported CSV format: missing amount column ('Dollar Amount' or 'Principal Amount')")
 
+        # Column positions in the ORIGINAL input layout. Each data row is still in
+        # that layout until 'Type' is inserted into it further down, so every check
+        # made before that insert must use these indices. (Using the modified header's
+        # indices there is off by one for every column after 'Transaction Description':
+        # it read the dollar amount where it meant to read the share count.)
+        src_shares_index = header.index(shares_col_name)
+        src_price_index = header.index('Share Price')
+        src_amount_index = header.index(amount_col_name)
+
         # Transformation Rule: A new 'Type' column is needed for easier data processing.
         # We find the index of 'Transaction Description' to insert 'Type' right after it.
         desc_index = header.index('Transaction Description')
         header.insert(desc_index + 1, 'Type')
+        # Column positions in the OUTPUT layout (after 'Type' has been inserted).
+        out_shares_index = header.index(shares_col_name)
+        unmapped_rows = 0
         # Write the new, modified header to our in-memory output.
         writer.writerow(header)
         
@@ -61,14 +89,17 @@ def convert_vanguard_401k_csv(input_file_path):
             if is_401k:
                 if 'Source to Source/Fund to Fund Transfer' in transaction_description:
                     continue
-                if transaction_description.startswith('Miscellaneous Credits') and float(row[header.index(shares_col_name)]) == 0:
+                # Vanguard books plan-level adjustments as 'Miscellaneous Credits/Adjustment',
+                # 'Miscellaneous Credit to Forfeiture Account', etc. Ones with zero shares are
+                # pure dollar adjustments that do not change the position, so skip them.
+                if transaction_description.startswith('Miscellaneous Credit') and to_float(row[src_shares_index]) == 0:
                     continue
             elif is_roth:
                 if 'Sweep' in transaction_description:
                     continue
 
             # Generic Filtering Rules
-            if transaction_description == 'Fee' and not row[header.index('Share Price')].strip():
+            if transaction_description == 'Fee' and not row[src_price_index].strip():
                 continue
 
             # Transformation Rule: Create the value for the new 'Type' column.
@@ -76,21 +107,25 @@ def convert_vanguard_401k_csv(input_file_path):
 
             # Type mapping based on file type
             if is_401k:
-                if transaction_description.startswith('Miscellaneous Credits'):
-                    try:
-                        shares_value = float(row[header.index(shares_col_name)])
-                        if shares_value < 0:
-                            type_col = 'Sell'
-                        elif shares_value > 0:
-                            type_col = 'Buy'
-                    except (ValueError, IndexError):
-                        # If for some reason shares aren't a number, leave the type as is.
-                        pass
-                
+                if transaction_description.startswith('Miscellaneous Credit'):
+                    # The sign of the SHARE change decides: shares added to the account
+                    # (e.g. a credit from the plan's forfeiture account) is a Buy, shares
+                    # taken away is a Sell. Zero-share rows were skipped above.
+                    shares_value = to_float(row[src_shares_index])
+                    if shares_value < 0:
+                        type_col = 'Sell'
+                    elif shares_value > 0:
+                        type_col = 'Buy'
+
                 if type_col == 'Plan Contribution':
                     type_col = 'Buy'
                 elif type_col == 'Fee':
-                    type_col = 'Fees'
+                    # Vanguard pays plan fees by redeeming shares. A plain 'Fees' entry in PP
+                    # ignores the share count, so the position drifts up by ~0.008 shares per
+                    # fee. Model it exactly instead: a Sell of the redeemed shares here, plus a
+                    # matching 'Fees' row (written further down) so the fee still shows as a
+                    # cost. The two cancel in the cash account.
+                    type_col = 'Sell'
                 elif type_col == 'Fund to Fund Out':
                     type_col = 'Sell'
                 elif type_col == 'Fund to Fund In':
@@ -102,6 +137,13 @@ def convert_vanguard_401k_csv(input_file_path):
                     type_col = 'Dividend'
                 elif type_col == 'Rollover Conversion':
                     type_col = 'Deposit'
+
+            if type_col not in PP_IMPORT_TYPES:
+                unmapped_rows += 1
+                print(f"WARNING: transaction type '{type_col}' has no Portfolio Performance mapping and must be "
+                      f"handled manually in PP -> {row[header.index('Trade Date')]} '{transaction_description}' "
+                      f"shares={row[src_shares_index]} amount={row[src_amount_index]}",
+                      file=sys.stderr)
 
             # Insert the new 'Type' value into the row
             row.insert(desc_index + 1, type_col)
@@ -123,8 +165,10 @@ def convert_vanguard_401k_csv(input_file_path):
 
             if amount_index < len(row) and row[amount_index]:
                 row[amount_index] = row[amount_index].replace('$', '')
-                if is_roth:
+                if is_roth or is_401k:
                     row[amount_index] = row[amount_index].replace('-', '')
+            if is_401k and out_shares_index < len(row) and row[out_shares_index]:
+                row[out_shares_index] = row[out_shares_index].replace('-', '')
 
             if is_roth:
                 if 'Net Amount' in header:
@@ -134,6 +178,18 @@ def convert_vanguard_401k_csv(input_file_path):
 
             # Write the cleaned and transformed row to the in-memory output.
             writer.writerow(row)
+
+            # Second half of the fee handling (see above): the 'Fees' entry for the same
+            # amount. Shares are blanked because PP ignores them on a fee anyway.
+            if is_401k and transaction_description == 'Fee':
+                fee_row = list(row)
+                fee_row[desc_index + 1] = 'Fees'
+                fee_row[out_shares_index] = ''
+                writer.writerow(fee_row)
+
+    if unmapped_rows:
+        print(f"WARNING: {unmapped_rows} row(s) have a transaction type Portfolio Performance cannot import "
+              f"(see above).", file=sys.stderr)
 
     # Return the complete CSV data as a single string.
     return output.getvalue()
@@ -155,4 +211,4 @@ if __name__ == '__main__':
     # Call the main conversion function to get the transformed data.
     transformed_content = convert_vanguard_401k_csv(input_csv)
     # Print the final result to standard output, which can be redirected to a file.
-    print(transformed_content)
+    print(transformed_content, end='')
